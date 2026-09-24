@@ -1,0 +1,12 @@
+#!/bin/sh
+# C compiler for the static musl build (rusqlite's bundled SQLite).
+# cc-rs passes a Rust-style --target=... that zig can't parse; drop it and
+# pin zig's own target instead.
+for arg; do
+  shift
+  case "$arg" in
+    --target=*) ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+exec zig cc -target x86_64-linux-musl "$@"
