@@ -320,3 +320,13 @@
   line-height: 1.35;
   color: #000;
 }
+
+/* Hand-written mode (lib/humanize.ts): words never break inside, letters are
+   inline-blocks so their per-letter transforms apply. */
+.hwWord {
+  white-space: nowrap;
+}
+.hwChar {
+  display: inline-block;
+  transform-origin: 50% 70%;
+}

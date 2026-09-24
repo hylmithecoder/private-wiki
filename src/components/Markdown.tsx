@@ -3,7 +3,7 @@
 import * as stylex from "@stylexjs/stylex";
 import Link from "next/link";
 import { useMemo, type ComponentProps, type ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import useSWR from "swr";
 
@@ -145,7 +145,14 @@ function text(children: ReactNode): string {
   return "";
 }
 
-export function Markdown({ content }: { content: string }) {
+export function Markdown({
+  content,
+  rehypePlugins,
+}: {
+  content: string;
+  /** Extra rehype plugins (e.g. handwriting jitter in the lined print view). */
+  rehypePlugins?: Options["rehypePlugins"];
+}) {
   const { data: pages } = useSWR<PageSummary[]>(keys.pages());
   const existing = useMemo(() => (pages ? new Set(pages.map((p) => p.slug)) : null), [pages]);
   const source = useMemo(() => expandWikilinks(content), [content]);
@@ -234,7 +241,7 @@ export function Markdown({ content }: { content: string }) {
 
   return (
     <div {...stylex.props(s.root)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins} components={components}>
         {source}
       </ReactMarkdown>
     </div>

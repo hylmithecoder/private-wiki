@@ -117,6 +117,14 @@ pub fn router(state: AppState) -> Router {
         .route("/recent", get(recent))
         .route("/tags", get(tags))
         .route("/graph", get(graph))
+        .route(
+            "/fonts",
+            get(list_fonts)
+                .post(upload_font)
+                .layer(axum::extract::DefaultBodyLimit::max(crate::wiki::MAX_FONT_BYTES + 1024)),
+        )
+        .route("/fonts/{id}", axum::routing::delete(delete_font))
+        .route("/fonts/{id}/file", get(font_file))
         .route_layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_login))
         .with_state(state);
 
@@ -208,6 +216,43 @@ async fn recent(State(AppState { wiki: w, .. }): State<AppState>, Query(q): Quer
 
 async fn graph(State(AppState { wiki: w, .. }): State<AppState>) -> impl IntoResponse {
     run(w, |w| w.graph()).await
+}
+
+#[derive(Deserialize)]
+struct FontUpload {
+    name: Option<String>,
+    filename: String,
+}
+
+async fn list_fonts(State(AppState { wiki: w, .. }): State<AppState>) -> impl IntoResponse {
+    run(w, |w| w.list_fonts()).await
+}
+
+/// Raw font bytes as the body; name and filename in the query string.
+async fn upload_font(
+    State(AppState { wiki: w, .. }): State<AppState>,
+    Query(q): Query<FontUpload>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let res = run(w, move |w| w.add_font(q.name.as_deref().unwrap_or(""), &q.filename, &body)).await;
+    res.map(|font| (StatusCode::CREATED, font))
+}
+
+async fn delete_font(State(AppState { wiki: w, .. }): State<AppState>, Path(id): Path<i64>) -> impl IntoResponse {
+    run(w, move |w| w.delete_font(id).map(|_| Ok { ok: true })).await
+}
+
+async fn font_file(State(AppState { wiki: w, .. }): State<AppState>, Path(id): Path<i64>) -> Response {
+    let res = tokio::task::spawn_blocking(move || w.font_file(id)).await.expect("wiki task panicked");
+    match res {
+        Result::Ok((mime, data)) => Response::builder()
+            .header(header::CONTENT_TYPE, mime)
+            // Ids are never reused, so the bytes behind one never change.
+            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .body(Body::from(data))
+            .unwrap(),
+        Err(e) => ApiError(e).into_response(),
+    }
 }
 
 async fn tags(State(AppState { wiki: w, .. }): State<AppState>) -> impl IntoResponse {

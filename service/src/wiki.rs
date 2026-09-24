@@ -156,6 +156,29 @@ pub struct GraphLink {
 }
 
 #[derive(Debug, Serialize)]
+pub struct FontMeta {
+    pub id: i64,
+    pub name: String,
+    pub filename: String,
+    pub size: i64,
+    pub created_at: i64,
+}
+
+/// Largest accepted font file. Handwriting fonts are usually < 500 KB.
+pub const MAX_FONT_BYTES: usize = 10 * 1024 * 1024;
+
+/// Detects the font format from its magic bytes; only real fonts are stored.
+fn font_mime(data: &[u8]) -> Option<&'static str> {
+    match data.get(..4)? {
+        [0x00, 0x01, 0x00, 0x00] | b"true" => Some("font/ttf"),
+        b"OTTO" => Some("font/otf"),
+        b"wOFF" => Some("font/woff"),
+        b"wOF2" => Some("font/woff2"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct TagCount {
     pub tag: String,
     pub count: i64,
@@ -221,6 +244,18 @@ CREATE INDEX IF NOT EXISTS page_tags_tag ON page_tags(tag);
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL
+);
+
+-- Uploaded fonts (e.g. a font made from the owner's handwriting) used by
+-- the print views. AUTOINCREMENT so ids are never reused: font files are
+-- served with immutable caching by id.
+CREATE TABLE IF NOT EXISTS fonts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    filename   TEXT NOT NULL,
+    mime       TEXT NOT NULL,
+    data       BLOB NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 -- rowid = pages.id; kept in sync by `index_page`.
@@ -618,6 +653,74 @@ impl Wiki {
     }
 }
 
+/// Uploaded fonts.
+impl Wiki {
+    pub fn list_fonts(&self) -> Result<Vec<FontMeta>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, name, filename, length(data), created_at FROM fonts ORDER BY name COLLATE NOCASE",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(FontMeta {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        filename: r.get(2)?,
+                        size: r.get(3)?,
+                        created_at: r.get(4)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows)
+        })
+    }
+
+    pub fn add_font(&self, name: &str, filename: &str, data: &[u8]) -> Result<FontMeta> {
+        if data.len() > MAX_FONT_BYTES {
+            return Err(WikiError::Invalid("font is larger than 10 MB".into()));
+        }
+        let mime = font_mime(data)
+            .ok_or_else(|| WikiError::Invalid("not a font file (use .ttf, .otf, .woff or .woff2)".into()))?;
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let name = if name.is_empty() { filename.to_string() } else { name };
+        if name.chars().count() > 80 {
+            return Err(WikiError::Invalid("font name must be at most 80 characters".into()));
+        }
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO fonts (name, filename, mime, data) VALUES (?1, ?2, ?3, ?4)",
+                params![name, filename, mime, data],
+            )?;
+            let id = c.last_insert_rowid();
+            Ok(FontMeta {
+                id,
+                name,
+                filename: filename.to_string(),
+                size: data.len() as i64,
+                created_at: c.query_row("SELECT created_at FROM fonts WHERE id = ?1", [id], |r| r.get(0))?,
+            })
+        })
+    }
+
+    /// (mime type, bytes)
+    pub fn font_file(&self, id: i64) -> Result<(String, Vec<u8>)> {
+        self.with(|c| {
+            c.query_row("SELECT mime, data FROM fonts WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?
+                .ok_or_else(|| WikiError::NotFound(format!("font {id}")))
+        })
+    }
+
+    pub fn delete_font(&self, id: i64) -> Result<()> {
+        self.with(|c| {
+            if c.execute("DELETE FROM fonts WHERE id = ?1", [id])? == 0 {
+                return Err(WikiError::NotFound(format!("font {id}")));
+            }
+            Ok(())
+        })
+    }
+}
+
 /// Web sessions (see http.rs). Kept here because this module owns the DB.
 impl Wiki {
     pub fn create_session(&self, token_hash: &str, ttl_secs: i64) -> Result<()> {
@@ -884,6 +987,12 @@ mod tests {
 
         w.create_page(new("SQLite", "Embedded database.")).unwrap();
         assert_eq!(w.backlinks("sqlite").unwrap()[0].slug, "rust-basics");
+        assert!(w.add_font("x", "x.txt", b"hello").is_err());
+        let f = w.add_font(" My  Hand ", "hand.ttf", &[0, 1, 0, 0, 9, 9]).unwrap();
+        assert_eq!(f.name, "My Hand");
+        assert_eq!(w.font_file(f.id).unwrap().0, "font/ttf");
+        w.delete_font(f.id).unwrap();
+        assert!(w.list_fonts().unwrap().is_empty());
         let g = w.graph().unwrap();
         assert_eq!(g.nodes.len(), 2);
         assert!(g.links.iter().any(|l| l.from == "rust-basics" && l.to == "sqlite"));

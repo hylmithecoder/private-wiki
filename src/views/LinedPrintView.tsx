@@ -1,19 +1,25 @@
 "use client";
 
 import * as stylex from "@stylexjs/stylex";
-import { ArrowLeft, FileDoc, Printer, Ruler, WarningCircle } from "@phosphor-icons/react";
+import { ArrowLeft, FileDoc, Printer, Ruler, Trash, UploadSimple, WarningCircle } from "@phosphor-icons/react";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
+import type { ElementContent } from "hast";
 
 import lined from "@/components/lined.module.css";
 import { Markdown } from "@/components/Markdown";
 import { Button, ErrorState, LinkButton, PageHeader, SkeletonText, inputStyles, surface } from "@/components/ui";
-import { keys, type Page } from "@/lib/api";
+import { api, fontFileUrl, keys, type FontMeta, type Page } from "@/lib/api";
+import { hashSeed, humanizeString, rehypeHumanize, styleObject, type HumanizeOptions } from "@/lib/humanize";
+import { useSession } from "@/lib/session";
 import {
   DEFAULTS,
+  FONTS,
   MM_TO_PX,
+  fontFamily,
+  uploadedFamily,
   PRESETS,
   geometry,
   textLeft,
@@ -78,6 +84,9 @@ const s = stylex.create({
   previewHead: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 },
   previewMeta: { fontSize: 13, color: color.textMuted },
   pages: { display: "flex", flexDirection: "column", alignItems: "center", gap: 20 },
+  range: { width: "100%", accentColor: color.accent },
+  fontActions: { display: "flex", gap: 8, flexWrap: "wrap" },
+  hint: { fontSize: 12.5, color: color.textFaint },
   check: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, color: color.textMuted, cursor: "pointer" },
   checkbox: { accentColor: color.accent, width: 16, height: 16 },
 });
@@ -114,6 +123,25 @@ function LinedPrint({ page }: { page: Page }) {
   const [mode, setMode] = useState<"doc" | "calib">("doc");
   const [pageCount, setPageCount] = useState(1);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [fontError, setFontError] = useState<string | null>(null);
+  const { canEdit } = useSession();
+  const { mutate } = useSWRConfig();
+  const { data: fonts } = useSWR<FontMeta[]>(keys.fonts());
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const family = fontFamily(settings.font);
+  const uploadedId = settings.font.startsWith("upload:") ? Number(settings.font.slice(7)) : null;
+  const human = useMemo<HumanizeOptions>(
+    () => ({
+      amount: settings.humanize / 100,
+      seed: hashSeed(page.slug),
+      wordClass: lined.hwWord,
+      charClass: lined.hwChar,
+    }),
+    [settings.humanize, page.slug],
+  );
+  const rehypePlugins = useMemo(() => (human.amount > 0 ? [rehypeHumanize(human)] : []), [human]);
   const flowRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const printRef = useRef<HTMLDivElement>(null);
@@ -258,20 +286,54 @@ function LinedPrint({ page }: { page: Page }) {
       );
       printBox.replaceChildren(...Array.from({ length: count }, (_, k) => makeSheet(k, true)));
     };
-    document.fonts.ready.then(() => requestAnimationFrame(run));
+    // Measure only once the chosen (possibly uploaded) font has loaded.
+    Promise.all([document.fonts.load(`16px ${family}`).catch(() => []), document.fonts.ready]).then(() =>
+      requestAnimationFrame(run),
+    );
     const ro = new ResizeObserver(() => requestAnimationFrame(run));
     if (previewRef.current) ro.observe(previewRef.current);
     return () => {
       cancelled = true;
       ro.disconnect();
     };
-  }, [settings, geo, page.content, baselineMm, unitScale]);
+  }, [settings, geo, page.content, baselineMm, unitScale, family, rehypePlugins]);
 
   const set = (patch: Partial<LinedSettings>) => setSettings((cur) => ({ ...cur, ...patch }));
   const setNum = (key: NumKey) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.valueAsNumber;
     if (!Number.isNaN(v)) set({ [key]: v, preset: key === "offsetX" || key === "offsetY" || key === "fontPt" || key === "lift" ? settings.preset : "custom" });
   };
+
+  async function uploadFont(file: File) {
+    setFontError(null);
+    if (!/\.(ttf|otf|woff2?)$/i.test(file.name)) {
+      setFontError("Choose a .ttf, .otf, .woff or .woff2 file.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const font = await api.uploadFont(file, file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " "));
+      await mutate(keys.fonts());
+      set({ font: `upload:${font.id}`, humanize: settings.humanize || 35 });
+    } catch (e) {
+      setFontError((e as Error).message);
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function deleteFont(id: number) {
+    if (!window.confirm("Delete this font from the wiki?")) return;
+    setFontError(null);
+    try {
+      await api.deleteFont(id);
+      await mutate(keys.fonts());
+      set({ font: "geist" });
+    } catch (e) {
+      setFontError((e as Error).message);
+    }
+  }
 
   function print(which: "doc" | "calib") {
     flushSync(() => setMode(which));
@@ -292,7 +354,11 @@ function LinedPrint({ page }: { page: Page }) {
   }
 
   // Pages are laid out by us (see run()), so the page box has no margins.
-  const pageCss = `@page { size: ${settings.paperW}mm ${settings.paperH}mm; margin: 0 }`;
+  const pageCss =
+    `@page { size: ${settings.paperW}mm ${settings.paperH}mm; margin: 0 }` +
+    (uploadedId != null
+      ? `\n@font-face { font-family: "${uploadedFamily(uploadedId)}"; src: url("${fontFileUrl(uploadedId)}"); font-display: block; }`
+      : "");
 
   const num = (key: NumKey, label: string, unit = "mm", step = 0.5) => (
     <div {...stylex.props(s.field)}>
@@ -370,6 +436,82 @@ function LinedPrint({ page }: { page: Page }) {
                 />
                 Paper has a red margin line
               </label>
+            </fieldset>
+
+            <fieldset {...stylex.props(s.group)}>
+              <legend {...stylex.props(s.legend)}>Handwriting</legend>
+              <div {...stylex.props(s.field)}>
+                <label htmlFor="lp-font" {...stylex.props(s.label)}>
+                  Font
+                </label>
+                <select
+                  id="lp-font"
+                  value={settings.font}
+                  onChange={(e) => set({ font: e.target.value })}
+                  {...stylex.props(inputStyles.input, s.select)}
+                >
+                  <optgroup label="Built in">
+                    {Object.entries(FONTS).map(([k, f]) => (
+                      <option key={k} value={k}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {fonts && fonts.length > 0 && (
+                    <optgroup label="Uploaded">
+                      {fonts.map((f) => (
+                        <option key={f.id} value={`upload:${f.id}`}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
+              <div {...stylex.props(s.field)}>
+                <label htmlFor="lp-human" {...stylex.props(s.label)}>
+                  Hand-written feel: {settings.humanize === 0 ? "off" : `${settings.humanize}%`}
+                </label>
+                <input
+                  id="lp-human"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={settings.humanize}
+                  onChange={(e) => set({ humanize: e.target.valueAsNumber })}
+                  {...stylex.props(s.range)}
+                />
+              </div>
+              {canEdit ? (
+                <div {...stylex.props(s.fontActions)}>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept=".ttf,.otf,.woff,.woff2,font/*"
+                    hidden
+                    onChange={(e) => e.target.files?.[0] && uploadFont(e.target.files[0])}
+                  />
+                  <Button size="sm" onClick={() => fileRef.current?.click()} disabled={uploading}>
+                    <UploadSimple />
+                    {uploading ? "Uploading" : "Upload font"}
+                  </Button>
+                  {uploadedId != null && (
+                    <Button size="sm" variant="ghost" onClick={() => deleteFont(uploadedId)}>
+                      <Trash />
+                      Delete font
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <p {...stylex.props(s.hint)}>Log in to upload your own font.</p>
+              )}
+              {fontError && (
+                <p role="alert" {...stylex.props(s.warn)}>
+                  <WarningCircle size={16} {...stylex.props(s.warnIcon)} />
+                  {fontError}
+                </p>
+              )}
             </fieldset>
 
             <fieldset {...stylex.props(s.group)}>
@@ -476,6 +618,11 @@ function LinedPrint({ page }: { page: Page }) {
                   Black and white printer? Keep Ink on Black so nothing prints as pale grey.
                 </li>
                 <li>
+                  Your own handwriting as a font: on calligraphr.com (free), download the template, fill it in with a pen,
+                  scan or photograph it, and export a .ttf. Adding 2-3 variants per letter makes it look even more
+                  natural. Then use Upload font here and turn up Hand-written feel.
+                </li>
+                <li>
                   Print the calibration sheet on one of your lined sheets. If its lines land 1.5 mm below the real ones,
                   set Shift down to -1.5 (same idea for Shift right).
                 </li>
@@ -507,14 +654,17 @@ function LinedPrint({ page }: { page: Page }) {
         <div
           className={settings.ink === "black" ? `${lined.doc} ${lined.inkBlack}` : lined.doc}
           style={{
+            fontFamily: family,
             ["--weight" as string]: settings.weight,
             ["--lh" as string]: `${lineUnit(settings.pitch)}px`,
             // Font size is pre-divided by the paint scale so it prints at the chosen pt.
             ["--font" as string]: `${settings.fontPt / unitScale}pt`,
           }}
         >
-          <h1>{page.title}</h1>
-          <Markdown content={page.content} />
+          <h1>
+            <Hast nodes={humanizeString(page.title, human)} />
+          </h1>
+          <Markdown content={page.content} rehypePlugins={rehypePlugins} />
         </div>
       </div>
 
@@ -538,6 +688,7 @@ function CalibrationSheet({ settings: c }: { settings: LinedSettings }) {
     bottom: `calc(${c.lift}mm - 0.2em)`,
     fontSize: `${c.fontPt}pt`,
     fontWeight: c.weight,
+    fontFamily: fontFamily(c.font),
   };
   return (
     <div className={`${lined.calib} ${lined.printOnly}`} style={{ width: `${c.paperW}mm`, height: `${c.paperH - 0.5}mm` }}>
@@ -598,5 +749,26 @@ function CalibrationSheet({ settings: c }: { settings: LinedSettings }) {
         lower by X mm, set Shift down to -X.
       </p>
     </div>
+  );
+}
+
+/** Renders the few hast nodes humanizeString produces (spans + text). */
+function Hast({ nodes }: { nodes: ElementContent[] }) {
+  return (
+    <>
+      {nodes.map((n, i) =>
+        n.type === "text" ? (
+          n.value
+        ) : n.type === "element" ? (
+          <span
+            key={i}
+            className={(n.properties.className as string[] | undefined)?.join(" ")}
+            style={styleObject(String(n.properties.style ?? ""))}
+          >
+            <Hast nodes={n.children} />
+          </span>
+        ) : null,
+      )}
+    </>
   );
 }

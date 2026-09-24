@@ -32,6 +32,10 @@ export type LinedSettings = {
   ink: "black" | "color";
   /** Body font weight; heavier prints crisper on inkjets. */
   weight: 400 | 500 | 600;
+  /** Built-in font key (see FONTS) or `upload:<id>` for an uploaded font. */
+  font: string;
+  /** 0-100: how much hand-written wobble to add. */
+  humanize: number;
   /** Printer calibration: shifts everything, mm (+ = right / down). */
   offsetX: number;
   offsetY: number;
@@ -98,6 +102,8 @@ export const DEFAULTS: LinedSettings = {
   gapLines: 1,
   ink: "black",
   weight: 500,
+  font: "geist",
+  humanize: 0,
   offsetX: 0,
   offsetY: 0,
 };
@@ -119,6 +125,21 @@ export function saveSettings(s: LinedSettings) {
   } catch {
     // Private mode etc.; settings just won't persist.
   }
+}
+
+/** Built-in fonts; uploaded ones use `upload:<id>` (see fontFamily). */
+export const FONTS: Record<string, { label: string; family: string }> = {
+  geist: { label: "Geist (typed)", family: "var(--font-geist-sans), system-ui, sans-serif" },
+  patrick: { label: "Patrick Hand (neat print)", family: "var(--font-patrick-hand), cursive" },
+  kalam: { label: "Kalam (casual)", family: "var(--font-kalam), cursive" },
+  caveat: { label: "Caveat (quick notes)", family: "var(--font-caveat), cursive" },
+};
+
+export const uploadedFamily = (id: number) => `WikiFont${id}`;
+
+export function fontFamily(font: string): string {
+  if (font.startsWith("upload:")) return `"${uploadedFamily(Number(font.slice(7)))}", cursive`;
+  return (FONTS[font] ?? FONTS.geist).family;
 }
 
 export const MM_TO_PX = 96 / 25.4;

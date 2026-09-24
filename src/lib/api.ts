@@ -108,10 +108,31 @@ export const keys = {
   recent: (author?: Author) => (author ? `/recent?author=${author}` : "/recent"),
   tags: () => "/tags",
   graph: () => "/graph",
+  fonts: () => "/fonts",
   session: () => "/session",
 };
 
+export type FontMeta = { id: number; name: string; filename: string; size: number; created_at: number };
+
+export const fontFileUrl = (id: number) => `${BASE}/api/fonts/${id}/file`;
+
 export const api = {
+  /** Font files go up as raw bytes (not JSON). */
+  uploadFont: async (file: File, name: string) => {
+    const q = new URLSearchParams({ name, filename: file.name });
+    const res = await fetch(`${BASE}/api/fonts?${q}`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: file,
+    }).catch(() => {
+      throw new ApiError("Can't reach the wiki service. Is it running?", 0);
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new ApiError(typeof body.error === "string" ? body.error : res.statusText, res.status, body);
+    return body as FontMeta;
+  },
+  deleteFont: (id: number) => request<{ ok: boolean }>(`/fonts/${id}`, { method: "DELETE" }),
+
   login: (key: string) => request<Session>("/login", { method: "POST", body: JSON.stringify({ key }) }),
   logout: () => request<Session>("/logout", { method: "POST" }),
 
