@@ -1,0 +1,16 @@
+# /etc/conf.d/trpl3c-wiki
+
+# Where install.sh put the binary.
+#WIKI_ROOT="/opt/trpl3c-wiki"
+
+# System user the service runs as.
+#WIKI_USER="wiki"
+
+# KEY=VALUE settings: WIKI_ADDR, WIKI_ADMIN_KEY, WIKI_MCP_KEY, WIKI_SECURE_COOKIE, WIKI_DB.
+#WIKI_ENV="/etc/trpl3c-wiki.env"
+
+# Database directory (wiki.db lives here unless WIKI_DB is set).
+#WIKI_DATA="/var/lib/trpl3c-wiki"
+
+# Everything the service prints, including the `mcp |` event lines.
+#WIKI_LOG="/var/log/trpl3c-wiki/wiki.log"

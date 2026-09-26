@@ -1,0 +1,15 @@
+#!/bin/sh
+# Prints the first free TCP port on HOST starting at PORT (tries 11 ports),
+# matching the server's own fallback. Usage: free-port HOST PORT
+host=${1:-127.0.0.1}
+port=${2:-4220}
+last=$((port + 10))
+while [ "$port" -le "$last" ]; do
+  if ! ss -Hltn "sport = :$port" | grep -q .; then
+    echo "$port"
+    exit 0
+  fi
+  port=$((port + 1))
+done
+echo "no free port in ${2:-4220}-$last on $host" >&2
+exit 1

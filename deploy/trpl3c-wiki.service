@@ -1,0 +1,22 @@
+# systemd *user* unit for the wiki (HTTP API + dashboard + remote MCP).
+# Installed by `make service-install`, which replaces @ROOT@ with the repo path.
+# Logs (including the `mcp |` event lines): journalctl --user -u trpl3c-wiki -f
+
+[Unit]
+Description=trpl3c wiki (API, dashboard and remote MCP)
+Documentation=file://@ROOT@/deploy/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@
+# WIKI_ADDR, WIKI_DB, WIKI_ADMIN_KEY, WIKI_MCP_KEY, WIKI_SECURE_COOKIE
+EnvironmentFile=-@ROOT@/.env
+ExecStart=@ROOT@/dist/mcp-service serve
+Restart=on-failure
+RestartSec=3
+# Files it creates (the database) are private to you.
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

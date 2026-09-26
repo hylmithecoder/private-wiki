@@ -1,0 +1,49 @@
+#!/sbin/openrc-run
+# shellcheck disable=SC2034 # the service variables are read by openrc-run
+# OpenRC service for the wiki (API, dashboard and remote MCP).
+# Settings: /etc/conf.d/trpl3c-wiki; secrets and WIKI_* vars: $WIKI_ENV.
+# Logs: $WIKI_LOG (default /var/log/trpl3c-wiki/wiki.log).
+
+name="trpl3c-wiki"
+description="trpl3c wiki (API, dashboard and remote MCP)"
+
+: "${WIKI_ROOT:=/opt/trpl3c-wiki}"
+: "${WIKI_USER:=wiki}"
+: "${WIKI_ENV:=/etc/trpl3c-wiki.env}"
+: "${WIKI_LOG:=/var/log/trpl3c-wiki/wiki.log}"
+: "${WIKI_DATA:=/var/lib/trpl3c-wiki}"
+
+command="${WIKI_ROOT}/mcp-service"
+command_args="serve"
+command_user="${WIKI_USER}:${WIKI_USER}"
+directory="${WIKI_DATA}"
+# supervise-daemon restarts it if it crashes.
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+output_log="${WIKI_LOG}"
+error_log="${WIKI_LOG}"
+umask=0077
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	checkpath --directory --mode 0750 --owner "${WIKI_USER}:${WIKI_USER}" "${WIKI_DATA}"
+	checkpath --directory --mode 0750 --owner "${WIKI_USER}:${WIKI_USER}" "$(dirname "${WIKI_LOG}")"
+	checkpath --file --mode 0640 --owner "${WIKI_USER}:${WIKI_USER}" "${WIKI_LOG}"
+
+	# KEY=VALUE lines (same format as the repo's .env), exported to the daemon.
+	if [ -f "${WIKI_ENV}" ]; then
+		set -a
+		# shellcheck disable=SC1090
+		. "${WIKI_ENV}"
+		set +a
+	else
+		ewarn "${WIKI_ENV} not found: web editing and remote MCP stay disabled"
+	fi
+	# Keep the database in the data dir unless the env file says otherwise.
+	export WIKI_DB="${WIKI_DB:-${WIKI_DATA}/wiki.db}"
+}
